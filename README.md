@@ -68,6 +68,7 @@ make install
 #### 2️⃣ start Isaac Sim (once, it keeps running)
 ```bash
 docker pull nvcr.io/nvidia/isaac-sim:5.1.0
+# Validate that you can launch isaacsim with official instructions: https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/install_container.html#container-deployment-with-gui
 mc_isaac_server --docker #--detach   # defaults to the official 5.1.0 image (nvcr.io/nvidia/isaac-sim:5.1.0)
 ```
 
