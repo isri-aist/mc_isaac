@@ -54,7 +54,7 @@ mc_rtc installed (see [installation cases](#-choose-your-installation) for the o
 
 #### 1️⃣ build and install mc_isaac  
 ```bash
-git clone --branch isaacsim5.1 https://github.com/Noceo200/mc_isaac.git && cd mc_isaac          
+git clone https://github.com/isri-aist/mc_isaac.git && cd mc_isaac          
 mkdir build/ && cd build
 #Install next to mc_rtc
 cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
@@ -424,8 +424,8 @@ Rules to know:
 |---|---|---|
 | `JVRC1` | embedded in mc_isaac (`robots/jvrc_isaac_description`) | floating humanoid, 4 force sensors, IMU; examples `JVRC1_CoM.yaml`, `JVRC1_Posture.yaml` |
 | `env/ground`, `env/table` | embedded in mc_isaac (`descriptions/`) | ground plane, kinematic table |
-| Unitree G1 (+ Revo2 hands) | [g1_isaac_description](https://github.com/Noceo200/g1_isaac_description) | floating, self-collisions |
-| BrainCo Revo2 hands | [revo2_isaac_description](https://github.com/Noceo200/revo2_isaac_description) | mimic finger joints |
+| Unitree G1 (+ Revo2 hands) | [g1_isaac_description](https://github.com/isri-aist/g1_isaac_description) | floating, self-collisions |
+| BrainCo Revo2 hands | [revo2_isaac_description](https://github.com/isri-aist/revo2_isaac_description) | mimic finger joints |
 
 ### Making a description for your robot
 
