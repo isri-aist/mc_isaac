@@ -1,0 +1,609 @@
+#!/usr/bin/env python3
+"""Start / stop / query an mc_isaac Isaac Sim server.
+
+Isaac Sim can come from a docker image, an apptainer/singularity image (.sif) or a local install.
+Standard library only: can be copied and used on any machine, without mc_rtc.
+"""
+
+import argparse
+import glob
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+DEFAULT_CONTAINER = "mc_isaac_server"
+DEFAULT_DOCKER_IMAGE = "nvcr.io/nvidia/isaac-sim:5.1.0"
+DEFAULT_BRIDGE_PORT = 5055
+CONTAINER_SERVER_PATH = "/tmp/mc_isaac_server.py"
+CONTAINER_XAUTH_PATH = "/tmp/.mc_isaac.Xauthority"
+MANAGED_LABEL = "mc_isaac.managed"
+ARGS_LABEL = "mc_isaac.args"
+IMAGE_PYTHON_CANDIDATES = [
+    "/isaac-sim/python.sh",  # NGC nvcr.io/nvidia/isaac-sim
+    "/IsaacSim/python.sh",
+    "/isaacsim/python.sh",
+    "/opt/isaac-sim/python.sh",
+]
+
+
+def log(msg):
+    print(f"[mc_isaac_server] {msg}", flush=True)
+
+
+def die(msg):
+    log(f"ERROR: {msg}")
+    sys.exit(1)
+
+
+def find_server_file():
+    """mc_isaac_server.py of the source tree or of the install (or $MC_ISAAC_SERVER_FILE)."""
+    here = Path(__file__).resolve().parent
+    candidates = []
+    if os.environ.get("MC_ISAAC_SERVER_FILE"):
+        candidates.append(Path(os.environ["MC_ISAAC_SERVER_FILE"]))
+    candidates += [
+        here.parent / "server" / "mc_isaac_server.py",  # source tree
+        here.parent / "share" / "mc_isaac" / "server" / "mc_isaac_server.py",  # installed: <prefix>/bin -> <prefix>/share
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    die("mc_isaac_server.py not found, tried:\n  " + "\n  ".join(str(c) for c in candidates)
+        + "\nSet MC_ISAAC_SERVER_FILE to its location.")
+
+
+# ---------------------------------------------------------------- HTTP
+
+def local_server_version(server_file):
+    """SERVER_VERSION of a server file, to warn about outdated running servers."""
+    match = re.search(r'^SERVER_VERSION = "([^"]+)"', server_file.read_text(), re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def http_json(url, method="GET", timeout=2.0):
+    """JSON reply of a server endpoint."""
+    req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def server_status(host, port):
+    """GET /status, None if no server answers."""
+    try:
+        return http_json(f"http://{host}:{port}/status")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def wait_ready(host, port, timeout, proc=None):
+    """Poll /status until the server is ready (dies on timeout or if proc exits)."""
+    log(f"Waiting for server at http://{host}:{port} (timeout {timeout:.0f}s)...")
+    start = time.time()
+    last_state = None
+    while time.time() - start < timeout:
+        if proc is not None and proc.poll() is not None:
+            die(f"Server process exited with code {proc.returncode}")
+        status = server_status(host, port)
+        state = status["state"] if status else "unreachable"
+        if state != last_state:
+            log(f"  server state: {state}")
+            last_state = state
+        if state == "ready":
+            log(f"Server ready: Isaac Sim {status.get('isaac_version')}")
+            if status.get("stream_url"):
+                log(f"Browser stream (view only): {status['stream_url']}")
+            return True
+        time.sleep(2.0)
+    die("Timeout while waiting for the server")
+
+
+# ---------------------------------------------------------------- discovery
+
+PROBE_SCRIPT = (
+    'for p in "$ISAACSIM_PYTHON_EXE" "${ISAACSIM_PATH:+$ISAACSIM_PATH/python.sh}" "${ISAAC_PATH:+$ISAAC_PATH/python.sh}" '
+    + " ".join(IMAGE_PYTHON_CANDIDATES)
+    + '; do [ -n "$p" ] && [ -x "$p" ] && { echo "$p"; exit 0; }; done; exit 1'
+)
+
+
+def has_isaacsim_package(python):
+    """True if this python can import the isaacsim pip package."""
+    code = "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('isaacsim') else 1)"
+    try:
+        return subprocess.run([python, "-c", code], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def discover_local_python():
+    """Isaac Sim python of a local install (env variables, usual folders, pip package)."""
+    checks = []
+    if os.environ.get("ISAACSIM_PYTHON_EXE"):
+        checks.append(Path(os.environ["ISAACSIM_PYTHON_EXE"]))
+    for var in ("ISAACSIM_PATH", "ISAAC_PATH"):
+        if os.environ.get(var):
+            checks.append(Path(os.environ[var]) / "python.sh")
+    home = Path.home()
+    checks += [home / "isaacsim" / "python.sh", home / "isaac-sim" / "python.sh"]
+    checks += [Path(p) for p in IMAGE_PYTHON_CANDIDATES]
+    checks += sorted((Path(p) for p in glob.glob(str(home / ".local/share/ov/pkg/isaac-sim-*/python.sh"))), reverse=True)
+    for c in checks:
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    # pip installed isaacsim
+    for py in dict.fromkeys(filter(None, [sys.executable, shutil.which("python3"), shutil.which("python")])):
+        if has_isaacsim_package(py):
+            return py
+    return None
+
+
+def probe_python_in(cmd_prefix, what):
+    """Isaac Sim python.sh inside a docker/apptainer image (runs PROBE_SCRIPT in it)."""
+    log(f"Looking for Isaac Sim python inside {what}...")
+    r = subprocess.run([*cmd_prefix, "sh", "-c", PROBE_SCRIPT], capture_output=True, text=True)
+    path = r.stdout.strip().splitlines()[-1] if r.returncode == 0 and r.stdout.strip() else None
+    if not path:
+        die(f"No Isaac Sim python.sh found in {what} (tried {', '.join(IMAGE_PYTHON_CANDIDATES)} and "
+            "$ISAACSIM_PYTHON_EXE/$ISAACSIM_PATH/$ISAAC_PATH). Use --python to give it explicitly.")
+    log(f"  found {path}")
+    return path
+
+
+# ---------------------------------------------------------------- launchers
+
+def server_args(args):
+    """Command line of mc_isaac_server.py for the launcher options."""
+    out = ["--host", args.host, "--http-port", str(args.http_port)]
+    if args.bridge_port != DEFAULT_BRIDGE_PORT:
+        out += ["--bridge-port", str(args.bridge_port)]
+    if args.headless:
+        out.append("--headless")
+    if args.max_fps is not None:
+        out += ["--max-fps", str(args.max_fps)]
+    if args.stepping_fps is not None:
+        out += ["--stepping-fps", str(args.stepping_fps)]
+    if args.vsync:
+        out.append("--vsync")
+    if args.stream != "none":
+        out += ["--stream", args.stream, "--stream-fps", str(args.stream_fps), "--stream-size", args.stream_size]
+    return out
+
+
+def run_process(cmd, args, log_file):
+    """Run the server: foreground (Ctrl-C stops it cleanly) or detached with a log file."""
+    log("Command: " + " ".join(cmd))
+    if args.dry_run:
+        return 0
+    if not args.detach:
+        # Ctrl-C reaches the server too (same process group): let it shut down Isaac cleanly
+        proc = subprocess.Popen(cmd)
+        interrupts = 0
+        while True:
+            try:
+                return proc.wait()
+            except KeyboardInterrupt:
+                interrupts += 1
+                if interrupts == 1:
+                    log("Ctrl-C: waiting for the server to stop (Ctrl-C again to kill it)")
+                else:
+                    proc.kill()
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "ab") as f:
+        proc = subprocess.Popen(cmd, stdout=f, stderr=subprocess.STDOUT, start_new_session=True)
+    log(f"Server started in background (pid {proc.pid}), log: {log_file}")
+    wait_ready(args.host, args.http_port, args.timeout, proc)
+    return 0
+
+
+def cache_dir():
+    """Launcher cache folder (server log, staged server file for apptainer)."""
+    return Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "mc_isaac"
+
+
+def launch_local(args, server_file):
+    """Start the server with a local Isaac Sim python."""
+    python = args.python if args.python not in (None, "auto") else discover_local_python()
+    if not python:
+        die("No local Isaac Sim found. Set ISAACSIM_PATH (folder containing python.sh), use --local /path/to/python.sh, "
+            "or use --docker IMAGE / --sif IMAGE.sif")
+    log(f"Using local Isaac Sim python: {python}")
+    return run_process([python, str(server_file), *server_args(args)], args, cache_dir() / "server.log")
+
+
+def launch_apptainer(args, server_file):
+    """Start the server in an apptainer/singularity image (--nv, server file staged in $HOME)."""
+    exe = shutil.which("apptainer") or shutil.which("singularity")
+    if not exe:
+        die("Neither apptainer nor singularity found in PATH")
+    sif = Path(args.sif).expanduser().resolve()
+    if not sif.is_file():
+        die(f"Image not found: {sif}")
+    python = args.python or probe_python_in([exe, "exec", str(sif)], str(sif))
+    # $HOME is bound by default in apptainer, so stage the server file there
+    staged = cache_dir() / "mc_isaac_server.py"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(server_file, staged)
+    cmd = [exe, "exec", "--nv", "--writable-tmpfs", *args.container_arg, str(sif), python, str(staged), *server_args(args)]
+    return run_process(cmd, args, cache_dir() / "server.log")
+
+
+def docker(*cmd, capture=False, check=True):
+    """Run a docker CLI command (dies on failure if check)."""
+    full = ["docker", *cmd]
+    r = subprocess.run(full, capture_output=capture, text=True)
+    if check and r.returncode != 0:
+        die(f"'{' '.join(full)}' failed" + (f": {r.stderr.strip()}" if capture else ""))
+    return r
+
+
+def docker_inspect(name, fmt):
+    """docker inspect -f fmt of a container, None if it does not exist."""
+    r = docker("inspect", "-f", fmt, name, capture=True, check=False)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def make_xauth_file(display):
+    """X11 cookie usable from the container (hostname-independent when xauth is available)."""
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    candidates = []
+    if os.environ.get("XAUTHORITY"):
+        candidates.append(Path(os.environ["XAUTHORITY"]).expanduser())
+    candidates += [Path.home() / ".Xauthority", runtime / "gdm" / "Xauthority", runtime / "Xauthority"]
+    user = os.environ.get("USER")
+    if user and Path(user).name == user:
+        candidates.append(Path("/run/lightdm") / user / "xauthority")
+    for pattern in (runtime / ".mutter-Xwaylandauth.*", runtime / "xauth_*",
+                    Path.home() / ".local/share/sddm/xauth_*", Path("/tmp/xauth_*")):
+        for filename in sorted(glob.glob(str(pattern)), reverse=True):
+            path = Path(filename)
+            try:
+                if path.stat().st_uid == os.getuid():
+                    candidates.append(path)
+            except OSError:
+                continue
+    fd, tmp = tempfile.mkstemp(prefix="mc_isaac_xauth_")
+    os.close(fd)
+    out = Path(tmp)
+    has_xauth = shutil.which("xauth") is not None
+    for source in dict.fromkeys(candidates):
+        try:
+            if not source.is_file() or not os.access(source, os.R_OK) or source.stat().st_size == 0:
+                continue
+            if has_xauth:
+                result = subprocess.run(["xauth", "-f", str(source), "nlist", display],
+                                        capture_output=True, text=True)
+                if result.returncode != 0 or not result.stdout.strip():
+                    continue
+                cookies = "".join("ffff" + line[4:] + "\n" for line in result.stdout.strip().splitlines())
+                merged = subprocess.run(["xauth", "-f", str(out), "nmerge", "-"], input=cookies,
+                                        text=True, capture_output=True)
+                if merged.returncode != 0:
+                    continue
+            else:
+                shutil.copyfile(source, out)
+                log("WARNING: xauth is not installed; copying the session cookie without hostname conversion")
+            log(f"Using X11 cookie from {source}")
+            return out
+        except OSError:
+            continue
+    out.unlink()
+    return None
+
+
+def copy_xauth_file(name, path):
+    """Copy a cookie readable by any image user, keeping the host file private."""
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        entry = tar.gettarinfo(str(path), arcname=Path(CONTAINER_XAUTH_PATH).name)
+        entry.mode = 0o444
+        with path.open("rb") as cookie:
+            tar.addfile(entry, cookie)
+    result = subprocess.run(["docker", "cp", "-", f"{name}:/tmp/"],
+                            input=archive.getvalue(), capture_output=True)
+    if result.returncode != 0:
+        die(f"Copying X11 cookie to {name} failed: {result.stderr.decode().strip()}")
+
+
+def wait_container_stopped(name, timeout):
+    """Wait until the container is no longer running."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if docker_inspect(name, "{{.State.Status}}") != "running":
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def stop_server(args, quiet=False):
+    """Clean shutdown over HTTP, then make sure the mc_isaac container is stopped."""
+    try:
+        http_json(f"http://{args.host}:{args.http_port}/shutdown", method="POST")
+        log("Shutdown requested, waiting for Isaac Sim to close...")
+    except (urllib.error.URLError, OSError, ValueError):
+        if not quiet:
+            log(f"No server answering at http://{args.host}:{args.http_port}")
+    if shutil.which("docker") and docker_inspect(args.name, "{{.State.Status}}") == "running":
+        if not wait_container_stopped(args.name, 30):
+            log(f"Container {args.name} still running, stopping it")
+            docker("stop", "-t", "10", args.name, capture=True, check=False)
+        log(f"Container {args.name} stopped")
+
+
+def official_docker_mounts(display, dry_run):
+    """Persistent mounts and X11 credentials for the tested NGC 5.1.0 image."""
+    base = Path.home() / "docker" / "isaac-sim"
+    mounts = []
+    for source, target in (
+        ("cache/main", ".cache"),
+        ("cache/computecache", ".nv/ComputeCache"),
+        ("logs", ".nvidia-omniverse/logs"),
+        ("config", ".nvidia-omniverse/config"),
+        ("data", ".local/share/ov/data"),
+        ("pkg", ".local/share/ov/pkg"),
+    ):
+        path = base / source
+        if not dry_run and not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+            if os.getuid() != 1234:
+                path.chmod(0o1777)
+        mounts += ["-v", f"{path}:/isaac-sim/{target}:rw"]
+    if display:
+        directory = cache_dir() / "docker-x11"
+        path = directory / "Xauthority"
+        if not dry_run:
+            cookie = make_xauth_file(display)
+            if cookie is None:
+                die(f"No readable X11 cookie found for DISPLAY={display}. Checked XAUTHORITY, ~/.Xauthority, "
+                    "and GDM/LightDM/SDDM/Xwayland session files. Run from your desktop terminal, install xauth "
+                    "if missing, or set XAUTHORITY to your session's cookie file. For a server without a display, "
+                    "unset DISPLAY and use --headless.")
+            try:
+                directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+                directory.chmod(0o700)
+                shutil.copyfile(cookie, path)
+                path.chmod(0o644)
+            finally:
+                cookie.unlink()
+        mounts += ["-e", f"DISPLAY={display}", "-e", "XAUTHORITY=/isaac-sim/.Xauthority",
+                   "-v", f"{path}:/isaac-sim/.Xauthority:ro"]
+    return mounts
+
+
+def launch_docker(args, server_file):
+    """Start the server in a reusable docker container: create it once (options stored in a
+    label), copy the current server file and X11 cookie into it, start it.
+    """
+    if not shutil.which("docker"):
+        die("docker not found in PATH")
+    name = args.name
+    # headless also gets X when available: on PRIME laptops the NVIDIA Vulkan driver (and Isaac's CUDA init) fail
+    # without it; machines without X (servers) do not need it
+    display = os.environ.get("DISPLAY")
+    if not args.headless and not display:
+        die("DISPLAY is not set: use --headless or run from a graphical session")
+    official = args.docker == DEFAULT_DOCKER_IMAGE
+    if official and args.host_vulkan:
+        log("WARNING: --host-vulkan overrides the official image's Vulkan configuration; omit it for the tested setup")
+    # bump "layout" when the container creation options change, to force --recreate of old containers
+    wanted = {"layout": 3, "image": args.docker, "args": server_args(args),
+              "container_args": args.container_arg, "host_vulkan": args.host_vulkan}
+    if official:
+        wanted["mount_home"] = str(Path.home())
+        wanted["display"] = display
+    if args.headless and display:
+        wanted["x11"] = True
+    wanted_label = json.dumps(wanted, sort_keys=True)
+
+    status = docker_inspect(name, "{{.State.Status}}")
+    if status is not None:
+        if docker_inspect(name, "{{index .Config.Labels \"" + MANAGED_LABEL + "\"}}") != "true":
+            die(f"A container named '{name}' exists but was not created by mc_isaac_server. Use --name to pick another name.")
+        if args.recreate:
+            log(f"Removing container {name} (--recreate)")
+            if not args.dry_run:
+                docker("rm", "-f", name)
+            status = None
+        elif docker_inspect(name, "{{index .Config.Labels \"" + ARGS_LABEL + "\"}}") != wanted_label:
+            die(f"Container '{name}' was created with other options (image/ports/headless/...). "
+                "Use --recreate to rebuild it (host-mounted caches are kept; container-local caches are lost).")
+        elif args.python and docker_inspect(name, "{{index .Config.Entrypoint 0}}") != args.python:
+            die(f"Container '{name}' was created with python "
+                f"'{docker_inspect(name, '{{index .Config.Entrypoint 0}}')}', not '{args.python}'. Use --recreate.")
+        elif status == "running":
+            log(f"Container {name} is already running (server not answering yet?); use --stop first or wait.")
+            return 0
+
+    mounts = official_docker_mounts(display, args.dry_run) if official else []
+    if status is None:
+        if args.python:
+            python = args.python
+        elif args.dry_run:
+            python = "<probed python.sh>"
+        else:
+            python = probe_python_in(["docker", "run", "--rm", "--entrypoint", "", args.docker], args.docker)
+        create = ["create", "--name", name,
+                  "--label", f"{MANAGED_LABEL}=true", "--label", f"{ARGS_LABEL}={wanted_label}",
+                  "--gpus", "all", "--network", "host",
+                  "-e", "ACCEPT_EULA=Y", "-e", "PRIVACY_CONSENT=Y"]
+        if official:
+            create += ["--user", "1234:1234", *mounts]
+        else:
+            create += ["--ipc", "host", "-e", "OMNI_KIT_ALLOW_ROOT=1",
+                       "-e", "NVIDIA_VISIBLE_DEVICES=all", "-e", "NVIDIA_DRIVER_CAPABILITIES=all"]
+        if display and not official:
+            create += ["-e", f"DISPLAY={display}", "-e", f"XAUTHORITY={CONTAINER_XAUTH_PATH}",
+                       "-v", "/tmp/.X11-unix:/tmp/.X11-unix:rw"]
+        if args.host_vulkan:
+            for d in ("/usr/share/vulkan", "/etc/vulkan"):
+                if Path(d).is_dir():
+                    create += ["-v", f"{d}:{d}:ro"]
+        create += [*args.container_arg, "--entrypoint", python, args.docker, CONTAINER_SERVER_PATH, *server_args(args)]
+        log("Command: docker " + " ".join(create))
+        if not args.dry_run:
+            docker(*create, capture=True)
+
+    # always push the current server file, the container keeps its Isaac caches between starts
+    log(f"Command: docker cp {server_file} {name}:{CONTAINER_SERVER_PATH}")
+    if args.dry_run:
+        return 0
+    docker("cp", str(server_file), f"{name}:{CONTAINER_SERVER_PATH}", capture=True)
+    if display and not official:
+        # fresh cookie at every start: X cookies change between sessions
+        xauth = make_xauth_file(display)
+        if xauth:
+            try:
+                copy_xauth_file(name, xauth)
+            finally:
+                xauth.unlink()
+        else:
+            log("WARNING: no X11 cookie found; if no window opens run on the host: xhost +SI:localuser:root")
+
+    if args.detach:
+        docker("start", name, capture=True)
+        log(f"Container {name} started, logs: docker logs -f {name}")
+        wait_ready(args.host, args.http_port, args.timeout)
+        return 0
+
+    log(f"Starting container {name} (Ctrl-C stops the server)")
+    since = str(int(time.time()))
+    docker("start", name, capture=True)
+    # own session: the log follower must survive Ctrl-C to show the shutdown messages
+    follower = subprocess.Popen(["docker", "logs", "-f", "--since", since, name], start_new_session=True)
+    try:
+        while follower.poll() is None:
+            time.sleep(0.5)
+        log(f"Container {name} exited")
+    except KeyboardInterrupt:
+        log("Ctrl-C: stopping the server")
+        stop_server(args, quiet=True)
+    finally:
+        if follower.poll() is None:
+            time.sleep(1.0)
+            follower.terminate()
+    return 0
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_status(args):
+    """--status: print the server status, warn if it is older than the local server file."""
+    status = server_status(args.host, args.http_port)
+    if status is None:
+        log(f"No server at http://{args.host}:{args.http_port}")
+        return 1
+    print(json.dumps(status, indent=2))
+    local = local_server_version(find_server_file())
+    if local and status.get("server_version") != local:
+        log(f"WARNING: running server {status.get('server_version')} != local server file {local}, restart it")
+    return 0
+
+
+def cmd_stop(args):
+    """--stop."""
+    stop_server(args)
+    return 0
+
+
+def cmd_clear(args):
+    """--clear: remove the scene (refused by the server while a controller is connected)."""
+    try:
+        http_json(f"http://{args.host}:{args.http_port}/clear", method="POST", timeout=60)
+    except urllib.error.HTTPError as e:
+        log(f"Cannot clear: {json.loads(e.read().decode()).get('error', e)}")
+        return 1
+    except (urllib.error.URLError, OSError, ValueError):
+        log(f"No server answering at http://{args.host}:{args.http_port}")
+        return 1
+    log("Isaac scene cleared")
+    return 0
+
+
+def parse_args():
+    """Launcher command line."""
+    p = argparse.ArgumentParser(
+        description="Start / stop / query an mc_isaac Isaac Sim server.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="examples:\n"
+               "  mc_isaac_server --docker                # tested NGC Isaac Sim 5.1.0\n"
+               "  mc_isaac_server --docker nvcr.io/nvidia/isaac-sim:5.1.0\n"
+               "  mc_isaac_server --sif ~/images/isaac-sim.sif --headless\n"
+               "  mc_isaac_server --local               # auto-discover a local Isaac Sim\n"
+               "  mc_isaac_server --status | --stop\n")
+    src = p.add_mutually_exclusive_group()
+    src.add_argument("--docker", nargs="?", const=DEFAULT_DOCKER_IMAGE, metavar="IMAGE",
+                     help=f"Docker image containing Isaac Sim (default when omitted: {DEFAULT_DOCKER_IMAGE}; only tested image)")
+    src.add_argument("--sif", metavar="FILE", help="Apptainer/Singularity image containing Isaac Sim")
+    src.add_argument("--local", nargs="?", const="auto", metavar="PYTHON_SH",
+                     help="Local Isaac Sim (path to python.sh, or auto-discovery if omitted). Default mode.")
+    src.add_argument("--status", action="store_true", help="Print the server status and exit")
+    src.add_argument("--stop", action="store_true", help="Stop the server")
+    src.add_argument("--clear", action="store_true", help="Remove the current scene (refused while mc_rtc is connected)")
+    p.add_argument("--host", default="127.0.0.1", help="Server HTTP address (default %(default)s)")
+    p.add_argument("--http-port", type=int, default=5050, help="Server HTTP port (default %(default)s)")
+    p.add_argument("--bridge-port", type=int, default=DEFAULT_BRIDGE_PORT,
+                   help="Server lockstep bridge port (default %(default)s)")
+    p.add_argument("--headless", action="store_true", help="No Isaac Sim window")
+    p.add_argument("--max-fps", type=float, help="Max render rate when idle (server default 60)")
+    p.add_argument("--stepping-fps", type=float, help="Max render rate while mc_rtc is stepping (server default 30)")
+    p.add_argument("--vsync", action="store_true", help="Present frames with vsync (may slow stepping)")
+    p.add_argument("--stream", choices=["none", "webrtc", "mjpeg"], default="none",
+                   help="webrtc: Isaac UI for the Isaac Sim WebRTC Streaming Client (implies --headless); "
+                        "mjpeg: view-only browser stream of the scene camera at http://<host>:<http-port>/")
+    p.add_argument("--stream-fps", type=float, default=15.0, help="MJPEG stream frame rate (default %(default)s)")
+    p.add_argument("--stream-size", default="1280x720", help="MJPEG stream resolution (default %(default)s)")
+    p.add_argument("--python", help="Isaac Sim python.sh inside the image (skips discovery)")
+    p.add_argument("--name", default=DEFAULT_CONTAINER, help="Docker container name (default %(default)s)")
+    p.add_argument("--recreate", action="store_true", help="Docker: remove and recreate the mc_isaac container")
+    p.add_argument("--host-vulkan", action="store_true",
+                   help="Docker: mount host /usr/share/vulkan and /etc/vulkan (needed by some images)")
+    p.add_argument("--container-arg", action="append", default=[], metavar="ARG",
+                   help="Extra argument for 'docker create' / 'apptainer exec' (repeatable, use --container-arg=-v...)")
+    p.add_argument("--detach", "-d", action="store_true", help="Run in background and wait until the server is ready")
+    p.add_argument("--timeout", type=float, default=300.0, help="Seconds to wait for readiness with --detach")
+    p.add_argument("--dry-run", action="store_true", help="Print commands without running them")
+    return p.parse_args()
+
+
+def main():
+    """Query/stop commands, or start a server unless one already answers."""
+    args = parse_args()
+    if args.stream == "webrtc":
+        args.headless = True
+    if args.status:
+        return cmd_status(args)
+    if args.stop:
+        return cmd_stop(args)
+    if args.clear:
+        return cmd_clear(args)
+
+    status = server_status(args.host, args.http_port)
+    if status is not None:
+        log(f"A server is already running at http://{args.host}:{args.http_port} (state: {status.get('state')}), "
+            "use --stop to stop it")
+        local = local_server_version(find_server_file())
+        if local and status.get("server_version") != local:
+            log(f"WARNING: running server is version {status.get('server_version')}, local server file is {local}: "
+                "restart it (--stop, then launch again) to use the new version")
+        return 0
+
+    server_file = find_server_file()
+    if args.docker:
+        return launch_docker(args, server_file)
+    if args.sif:
+        return launch_apptainer(args, server_file)
+    args.python = args.python or args.local
+    return launch_local(args, server_file)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

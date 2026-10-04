@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Convert STL/OBJ meshes into a single-file USDA rigid body usable by mc_isaac (Python standard library only).
+
+The USD has a rigid body root prim (mass optional), visual meshes and invisible collision meshes. It is meant to be
+generated once and shipped in a description package. mc_isaac makes the body kinematic for fixed robots.
+
+Example (wrench made of a visual mesh and convex collision pieces):
+  mc_isaac_mesh_to_usd --out wrench.usda --mass 0.745 --visual wrench.STL --color 0.6 0.6 0.65 \\
+      --collision c0.STL --collision c1.STL --approximation convexHull
+"""
+
+import argparse
+import struct
+import sys
+from pathlib import Path
+
+APPROXIMATIONS = ["convexHull", "convexDecomposition", "boundingCube", "boundingSphere", "meshSimplification", "none"]
+
+
+def read_stl(path):
+    """Points and triangles of an ASCII or binary STL (identical vertices merged)."""
+    data = path.read_bytes()
+    triangles = []
+    if data[:5].lower() == b"solid" and b"facet" in data[:1024]:
+        vertices = [tuple(float(v) for v in line.split()[1:4])
+                    for line in data.decode(errors="ignore").splitlines() if line.strip().startswith("vertex")]
+        triangles = [vertices[i:i + 3] for i in range(0, len(vertices) - 2, 3)]
+    else:
+        count = struct.unpack_from("<I", data, 80)[0]
+        for i in range(count):
+            values = struct.unpack_from("<9f", data, 84 + 50 * i + 12)
+            triangles.append([values[0:3], values[3:6], values[6:9]])
+    # STL repeats vertices for every triangle: merge identical ones
+    index, points, faces = {}, [], []
+    for tri in triangles:
+        face = []
+        for v in tri:
+            key = tuple(round(c, 7) for c in v)
+            if key not in index:
+                index[key] = len(points)
+                points.append(key)
+            face.append(index[key])
+        faces.append(face)
+    return points, faces, None
+
+
+def read_obj(path):
+    """Points, faces and diffuse color (mtl Kd) of an OBJ."""
+    points, faces, color = [], [], None
+    materials = {}
+    current = None
+    for line in path.read_text(errors="ignore").splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "v":
+            points.append(tuple(float(c) for c in parts[1:4]))
+        elif parts[0] == "f":
+            # "f v/vt/vn ...", negative indices are relative to the end
+            idx = [int(p.split("/")[0]) for p in parts[1:]]
+            faces.append([i - 1 if i > 0 else len(points) + i for i in idx])
+            if color is None and current in materials:
+                color = materials[current]
+        elif parts[0] == "mtllib":
+            mtl = path.parent / " ".join(parts[1:])
+            if mtl.is_file():
+                name = None
+                for mline in mtl.read_text(errors="ignore").splitlines():
+                    m = mline.split()
+                    if m and m[0] == "newmtl":
+                        name = " ".join(m[1:])
+                    elif m and m[0] == "Kd" and name is not None:
+                        materials[name] = tuple(float(c) for c in m[1:4])
+        elif parts[0] == "usemtl":
+            current = " ".join(parts[1:])
+    return points, faces, color
+
+
+def read_mesh(path, scale):
+    """STL or OBJ mesh by extension."""
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".stl":
+        points, faces, color = read_stl(path)
+    elif suffix == ".obj":
+        points, faces, color = read_obj(path)
+    else:
+        sys.exit(f"Unsupported mesh format: {path} (STL or OBJ)")
+    return [tuple(c * scale for c in p) for p in points], faces, color
+
+
+def fmt(values):
+    """Number formatting for USDA."""
+    return ", ".join(f"{v:.7g}" for v in values)
+
+
+def mesh_prim(name, points, faces, indent, extra_schemas="", extra_attrs=()):
+    """USDA text of a mesh prim (visual or invisible collision mesh)."""
+    pad = " " * indent
+    schemas = f' (\n{pad}    prepend apiSchemas = [{extra_schemas}]\n{pad})' if extra_schemas else ""
+    lines = [f'{pad}def Mesh "{name}"{schemas}', f"{pad}{{"]
+    lines += [f"{pad}    {attr}" for attr in extra_attrs]
+    lines.append(f"{pad}    int[] faceVertexCounts = [{', '.join(str(len(f)) for f in faces)}]")
+    lines.append(f"{pad}    int[] faceVertexIndices = [{', '.join(str(i) for f in faces for i in f)}]")
+    lines.append(f"{pad}    point3f[] points = [{', '.join(f'({fmt(p)})' for p in points)}]")
+    lines.append(f'{pad}    uniform token subdivisionScheme = "none"')
+    lines.append(f"{pad}}}")
+    return lines
+
+
+def main():
+    """Build the rigid body USDA from the visual/collision meshes."""
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--out", required=True, type=Path, help="Output .usda file")
+    p.add_argument("--name", default="object", help="Root (default) prim name")
+    p.add_argument("--visual", action="append", default=[], help="Visual mesh (STL/OBJ), repeatable")
+    p.add_argument("--collision", action="append", default=[], help="Collision mesh (STL/OBJ), repeatable; "
+                   "defaults to the visual meshes")
+    p.add_argument("--approximation", default="convexHull", choices=APPROXIMATIONS,
+                   help="PhysX collision approximation (none = triangle mesh, only for fixed/kinematic objects)")
+    p.add_argument("--color", nargs=3, type=float, help="Visual color (RGB 0-1), else OBJ material Kd or grey")
+    p.add_argument("--mass", type=float, help="Mass [kg] (inertia computed by PhysX from the collision shapes)")
+    p.add_argument("--scale", type=float, default=1.0, help="Mesh scale (e.g. 0.001 for millimeters)")
+    args = p.parse_args()
+    if not args.visual and not args.collision:
+        sys.exit("Give at least one --visual or --collision mesh")
+
+    schemas = '"PhysicsRigidBodyAPI", "PhysicsMassAPI"' if args.mass is not None else '"PhysicsRigidBodyAPI"'
+    out = ["#usda 1.0", "(", f'    defaultPrim = "{args.name}"', "    metersPerUnit = 1", '    upAxis = "Z"',
+           f'    doc = "Generated by mc_isaac_mesh_to_usd from {", ".join(Path(m).name for m in args.visual + args.collision)}"',
+           ")", "", f'def Xform "{args.name}" (', f"    prepend apiSchemas = [{schemas}]", ")", "{"]
+    if args.mass is not None:
+        out.append(f"    float physics:mass = {args.mass:.7g}")
+    if args.visual:
+        out += ['    def Scope "visuals"', "    {"]
+        for i, mesh in enumerate(args.visual):
+            points, faces, mesh_color = read_mesh(mesh, args.scale)
+            color = args.color or mesh_color or (0.6, 0.6, 0.6)
+            out += mesh_prim(f"visual_{i}", points, faces, 8,
+                             extra_attrs=[f"color3f[] primvars:displayColor = [({fmt(color)})]"])
+        out.append("    }")
+    out += ['    def Scope "collisions"', "    {"]
+    for i, mesh in enumerate(args.collision or args.visual):
+        points, faces, _ = read_mesh(mesh, args.scale)
+        out += mesh_prim(f"collision_{i}", points, faces, 8,
+                         extra_schemas='"PhysicsCollisionAPI", "PhysicsMeshCollisionAPI"',
+                         extra_attrs=[f'uniform token physics:approximation = "{args.approximation}"',
+                                      'uniform token purpose = "guide"'])
+    out += ["    }", "}", ""]
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text("\n".join(out))
+    print(f"Wrote {args.out} ({args.out.stat().st_size / 1e6:.2f} MB)")
+
+
+if __name__ == "__main__":
+    main()

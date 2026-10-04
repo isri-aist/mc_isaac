@@ -1,0 +1,5 @@
+---
+# Isaac description of the mc_rtc "table" environment (env/table, mc_env_description), kinematic rigid body.
+# Mesh: mc_mujoco robots/assets/table.stl, converted with mc_isaac_mesh_to_usd (triangle mesh collision).
+usd: env/table.usda
+fixed: true

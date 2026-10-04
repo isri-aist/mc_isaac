@@ -1,0 +1,72 @@
+---
+# Default configuration of the IsaacSim plugin (override in ~/.config/mc_rtc/plugins/IsaacSim.yaml).
+# The plugin only does something when mc_rtc is started with the mc_isaac command.
+server:
+  host: 127.0.0.1
+  http_port: 5050
+  bridge_port: 5055
+  # seconds to wait for a ready server (Isaac Sim boot can be long)
+  connect_timeout: 120
+  # How mc_isaac starts the server when nothing answers at host:http_port (only for a local host).
+  # Same options as the mc_isaac_server command, which can also be used to start/stop the server by hand.
+  launch:
+    # none: only connect (server started by hand) | docker | apptainer | local | auto
+    # auto: docker if docker.image is set, else apptainer if apptainer.image is set, else local auto-discovery
+    mode: none
+    # leave the server running when mc_isaac exits (next runs start instantly)
+    keep_alive: true
+    headless: false
+    # none | mjpeg: view-only browser stream of the scene camera at http://<host>:<http_port>/ |
+    # webrtc: Isaac UI for the Isaac Sim WebRTC Streaming Client (implies headless)
+    stream: none
+    stream_fps: 15
+    stream_size: 1280x720
+    docker:
+      image: ""  # e.g. nvcr.io/nvidia/isaac-sim:5.1.0
+      name: mc_isaac_server
+      python: auto  # python.sh inside the image, auto = discovery
+      host_vulkan: false
+      container_args: []
+    apptainer:
+      image: ""  # path to a .sif file
+      python: auto
+      container_args: []
+    local:
+      python: auto  # path to the Isaac Sim python.sh, auto = discovery
+simulation:
+  # must divide the mc_rtc Timestep: one control step = Timestep / physics_dt physics steps
+  # auto: largest divisor of the Timestep not above 5 ms (IsaacLab default), e.g. 5 ms for a 5 ms Timestep
+  physics_dt: auto
+  # linear interpolation of the commands over the physics substeps
+  interpolate_commands: true
+  # send mc_rtc joint torques as feedforward efforts
+  torque_control: false
+  # print a timing breakdown (mc_rtc / bridge / physics / rendering) every print_timings_period seconds
+  print_timings: false
+  print_timings_period: 5.0
+# draw the mc_rtc 3D GUI elements (points, trajectories, arrows, frames...) in the Isaac viewport
+markers: true
+# 2D GUI in the Isaac window: none | minimal (mc_isaac panel) | full (the whole mc_rtc GUI, like mc-rtc-magnum,
+# one tab per mc_rtc category docked next to Property, plots in an "mc_rtc plots" window)
+gui: minimal
+# mc_rtc robots not simulated (e.g. visual-only goal/ghost robots)
+exclude_robots: []
+# Isaac descriptions: for each mc_rtc robot, <key>.yaml with key = robot module name, robot name or MainRobot alias,
+# searched in ~/.config/mc_rtc/mc_isaac, then description_paths, then @CMAKE_INSTALL_PREFIX@/share/mc_isaac
+# (where <robot>_isaac_description packages install when installed alongside mc_isaac).
+description_paths: []
+# Inline descriptions, checked before the files (same content as a <key>.yaml)
+# robots:
+#   my_robot_module:
+#     usd: /path/to/robot.usd
+#     fixed: true
+#     self_collisions: true   # optional, overrides the articulation setting of the USD
+#     solver_iterations: {position: 8, velocity: 1}   # optional PhysX articulation solver iterations
+#     drives:
+#       - {joints: "arm_.*", stiffness: 3000.0, damping: 80.0, max_effort: 150.0}
+# Fixed scene camera (world frame): source of the mjpeg stream, and viewport camera when headless / webrtc
+# (viewport: true also uses it in the Isaac window). Changing it reloads the Isaac scene.
+camera:
+  position: [2.0, -2.0, 1.5]
+  target: [0.0, 0.0, 0.8]
+  focal_length: 18.0

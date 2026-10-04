@@ -1,0 +1,6 @@
+# JVRC1 standing with the mc_rtc CoM sample controller: mc_isaac -f <prefix>/share/mc_isaac/examples/JVRC1_CoM.yaml
+# Move the CoM target from the mc_rtc GUI; the feet force sensors are in the GUI plots / log.
+MainRobot: JVRC1
+Enabled: CoM
+Timestep: 0.005
+Plugins: [IsaacSim]

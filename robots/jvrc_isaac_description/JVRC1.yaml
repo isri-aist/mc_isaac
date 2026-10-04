@@ -1,0 +1,24 @@
+# mc_isaac description of the mc_rtc robot module JVRC1 (mc_rtc's default humanoid, floating base)
+# USD converted from jvrc_description/urdf/jvrc1.urdf with mc_isaac_urdf_to_usd.py (Isaac Sim URDF importer)
+usd: jvrc1/jvrc1.usd
+# mesh textures referenced by the USD (relative to its folder), uploaded with it
+extra_files: [textures/Map01_siri.jpg, textures/Map03_douF.jpg, textures/Map03_douR.jpg, textures/Map05_atamaF.jpg,
+              textures/Map05_atamaR.jpg, textures/Map06_migikata.jpg, textures/Map07_migijowan.jpg,
+              textures/Map08_migikawan.jpg, textures/Map09_migitekubi.jpg, textures/Map10_migitenohira.jpg,
+              textures/Map12_migiisshisaki.jpg, textures/Map14_miginishisaki.jpg, textures/Map28_migimata.jpg,
+              textures/Map29_migidaitai.jpg, textures/Map30_migisune.jpg, textures/Map31_migiashikubi.jpg,
+              textures/Map32_migiashi.jpg]
+fixed: false
+# PhysX joint drives (rad units), gains from jvrc_mj_description pdgains/PDgains_sim.dat (as mc_mujoco).
+# The URDF effort limits (100 N.m) are placeholders: raised so the legs can hold the robot.
+# The URDF mimic finger joints are regular driven joints (mc_rtc computes their targets).
+drives:
+  - {joints: "(R|L)_HIP_(P|R|Y)", stiffness: 5000.0, damping: 30.0, max_effort: 1000.0}
+  - {joints: "(R|L)_KNEE", stiffness: 6000.0, damping: 50.0, max_effort: 1000.0}
+  - {joints: "(R|L)_ANKLE_(R|P)", stiffness: 3000.0, damping: 20.0, max_effort: 1000.0}
+  - {joints: "WAIST_(Y|P|R)", stiffness: 5000.0, damping: 32.0, max_effort: 1000.0}
+  - {joints: "NECK_(Y|R|P)", stiffness: 1000.0, damping: 21.0}
+  - {joints: "(R|L)_SHOULDER_(P|R|Y)", stiffness: 1100.0, damping: 70.0, max_effort: 500.0}
+  - {joints: "(R|L)_ELBOW_(P|Y)", stiffness: 1200.0, damping: 80.0, max_effort: 500.0}
+  - {joints: "(R|L)_WRIST_(R|Y)", stiffness: 500.0, damping: 24.0}
+  - {joints: "(R|L)_(U|L)(THUMB|INDEX|LITTLE)", stiffness: 501.0, damping: 25.0}

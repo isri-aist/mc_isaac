@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""mc_isaac: run an mc_rtc controller in Isaac Sim (mc_rtc_ticker + IsaacSim plugin), like mc_mujoco.
+
+Options not listed here are passed to mc_rtc_ticker (e.g. log replay). Isaac options override the IsaacSim plugin
+configuration (~/.config/mc_rtc/plugins/IsaacSim.yaml) for this run only.
+"""
+
+import argparse
+import os
+import shutil
+import sys
+
+
+def main():
+    """Translate the options to mc_rtc_ticker arguments and MC_ISAAC_* variables, then exec mc_rtc_ticker."""
+    p = argparse.ArgumentParser(
+        prog="mc_isaac",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="examples:\n"
+               "  mc_isaac -f my_controller.yaml\n"
+               "  mc_isaac --step-by-step --no-markers\n"
+               "  mc_isaac --gui full                     # whole mc_rtc GUI in the Isaac window\n"
+               "  mc_isaac --headless --stream mjpeg      # watch at http://127.0.0.1:5050/\n"
+               "  mc_isaac --without-visualization        # no Isaac picture (use mc-rtc-magnum)\n")
+    ticker = p.add_argument_group("mc_rtc (mc_rtc_ticker / mc_mujoco options)")
+    ticker.add_argument("-f", "--mc-config", metavar="FILE", help="Configuration given to mc_rtc")
+    ticker.add_argument("-S", "--step-by-step", action="store_true", help="Start paused in step-by-step mode")
+    ticker.add_argument("-s", "--sync", action="store_true",
+                        help="Synchronize with real time (default, kept for mc_mujoco compatibility)")
+    ticker.add_argument("--no-sync", action="store_true", help="Run as fast as possible")
+    ticker.add_argument("-r", "--sync-ratio", type=float, metavar="RATIO", help="Target sim/real time ratio")
+    ticker.add_argument("--run-for", type=float, metavar="SECONDS", help="Stop after this simulated time")
+    ticker.add_argument("--torque-control", action="store_true",
+                        help="Send mc_rtc joint torques as efforts (drive gains set to 0)")
+
+    isaac = p.add_argument_group("Isaac Sim")
+    isaac.add_argument("--server", metavar="HOST[:PORT]", help="Isaac server address (HTTP port, default 5050)")
+    isaac.add_argument("--launch", choices=["none", "auto", "docker", "apptainer", "local"],
+                       help="How to start the server if none is running")
+    isaac.add_argument("--headless", action="store_true", help="No Isaac window (when mc_isaac starts the server)")
+    isaac.add_argument("--stream", choices=["none", "mjpeg", "webrtc"],
+                       help="Isaac picture stream (when mc_isaac starts the server)")
+    isaac.add_argument("--without-visualization", action="store_true",
+                       help="No Isaac picture at all: --headless --stream none (mc_mujoco option)")
+    isaac.add_argument("--physics-dt", metavar="DT|auto", help="Physics time step (must divide the mc_rtc Timestep)")
+    isaac.add_argument("--reload-scene", action="store_true", help="Rebuild the Isaac scene even if unchanged")
+    isaac.add_argument("--with-collisions", action="store_true", help="Show the collision shapes in Isaac")
+    isaac.add_argument("--no-markers", action="store_true", help="Do not draw the mc_rtc 3D GUI elements in Isaac")
+    isaac.add_argument("--gui", choices=["none", "minimal", "full"],
+                       help="2D GUI in the Isaac window: none, minimal (mc_isaac panel) or full (whole mc_rtc GUI)")
+    isaac.add_argument("--print-timings", action="store_true", help="Print a timing breakdown every 5 s")
+    args, passthrough = p.parse_known_args()
+
+    if args.sync and args.no_sync:
+        p.error("--sync and --no-sync are exclusive")
+    if args.physics_dt is not None and args.physics_dt != "auto":
+        try:
+            if float(args.physics_dt) <= 0:
+                raise ValueError
+        except ValueError:
+            p.error("--physics-dt must be a positive number or auto")
+
+    ticker_exe = shutil.which("mc_rtc_ticker")
+    if ticker_exe is None:
+        sys.exit("[mc_isaac] mc_rtc_ticker not found in PATH")
+
+    cmd = [ticker_exe]
+    if args.mc_config:
+        cmd += ["-f", args.mc_config]
+    if args.step_by_step:
+        cmd.append("--step-by-step")
+    if args.no_sync:
+        cmd.append("--no-sync")
+    if args.sync_ratio is not None:
+        cmd += ["--sync-ratio", str(args.sync_ratio)]
+    if args.run_for is not None:
+        cmd += ["--run-for", str(args.run_for)]
+    cmd += passthrough
+
+    # read by the IsaacSim plugin (overrides of IsaacSim.yaml)
+    env = os.environ.copy()
+    env["MC_ISAAC_ACTIVE"] = "1"
+    env["MC_ISAAC_SYNC"] = "0" if args.no_sync else "1"
+    if args.sync_ratio is not None:
+        env["MC_ISAAC_SYNC_RATIO"] = str(args.sync_ratio)
+    if args.torque_control:
+        env["MC_ISAAC_TORQUE_CONTROL"] = "1"
+    if args.server:
+        env["MC_ISAAC_SERVER"] = args.server
+    if args.launch:
+        env["MC_ISAAC_LAUNCH"] = args.launch
+    if args.headless or args.without_visualization:
+        env["MC_ISAAC_HEADLESS"] = "1"
+    if args.stream or args.without_visualization:
+        env["MC_ISAAC_STREAM"] = "none" if args.without_visualization else args.stream
+    if args.physics_dt:
+        env["MC_ISAAC_PHYSICS_DT"] = args.physics_dt
+    if args.reload_scene:
+        env["MC_ISAAC_RELOAD_SCENE"] = "1"
+    if args.with_collisions:
+        env["MC_ISAAC_SHOW_COLLISIONS"] = "1"
+    if args.no_markers:
+        env["MC_ISAAC_MARKERS"] = "0"
+    if args.gui:
+        env["MC_ISAAC_GUI"] = args.gui
+    if args.print_timings:
+        env["MC_ISAAC_PRINT_TIMINGS"] = "1"
+    os.execve(ticker_exe, cmd, env)
+
+
+if __name__ == "__main__":
+    main()

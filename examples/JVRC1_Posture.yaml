@@ -1,0 +1,6 @@
+# JVRC1 with the mc_rtc Posture sample controller: mc_isaac -f <prefix>/share/mc_isaac/examples/JVRC1_Posture.yaml
+# Move the joints from the mc_rtc GUI (Tasks > posture).
+MainRobot: JVRC1
+Enabled: Posture
+Timestep: 0.005
+Plugins: [IsaacSim]
