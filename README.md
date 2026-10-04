@@ -4,10 +4,8 @@
   <img src="examples/interface_visual.png">
 </p>
 
-[![Isaac Sim 5.1](https://img.shields.io/badge/Isaac%20Sim-5.1-76B900?logo=nvidia&logoColor=white)](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/)
-[![Status](https://img.shields.io/badge/Status-Validated-success)](...)
-<!--[![Isaac Sim 6.1](https://img.shields.io/badge/Isaac%20Sim-6.1-76B900?logo=nvidia&logoColor=white)](...)
-[![Status](https://img.shields.io/badge/Status-Under%20Development-orange)](...)-->
+[![Isaac Sim 6.1](https://img.shields.io/badge/Isaac%20Sim-6.1-76B900?logo=nvidia&logoColor=white)](...)
+[![Status](https://img.shields.io/badge/Status-Under%20Development-orange)](...)
 
 **mc_isaac** brings the [mc_rtc](https://jrl-umi3218.github.io/mc_rtc/) control framework to [NVIDIA Isaac Sim](https://developer.nvidia.com/isaac/sim), allowing you to write your controller once and run it in a high-fidelity simulation environment with RTX rendering, GPU-accelerated PhysX, and robot assets from Isaac Lab, while keeping the familiar mc_rtc tools and workflow. It provides for Isaac Sim what [mc_mujoco](https://github.com/rohanpsingh/mc_mujoco) provides for MuJoCo: a bridge between mc_rtc and a modern physics simulator.
 
@@ -67,8 +65,8 @@ make install
 
 #### 2️⃣ start Isaac Sim (once, it keeps running)
 ```bash
-docker pull nvcr.io/nvidia/isaac-sim:5.1.0
-mc_isaac_server --docker #--detach   # defaults to the official 5.1.0 image (nvcr.io/nvidia/isaac-sim:5.1.0)
+docker pull nvcr.io/nvidia/isaac-sim:6.1.0
+mc_isaac_server --docker #--detach   # defaults to the official 6.1.0 image (nvcr.io/nvidia/isaac-sim:6.1.0)
 ```
 
 #### 3️⃣ run a controller: the embedded JVRC1 humanoid with the mc_rtc CoM sample controller
@@ -120,7 +118,7 @@ flowchart TD
     Q2 -->|in a container| B[Case B]
 ```
 
-**Recommended Docker image**: `nvcr.io/nvidia/isaac-sim:5.1.0`, the only tested Docker image.
+**Recommended Docker image**: `nvcr.io/nvidia/isaac-sim:6.1.0`, the only tested Docker image.
 Bare `mc_isaac_server --docker` selects it. Other images and installs remain configurable through Python
 discovery and `--container-arg`, but are not validated. Isaac Sim 6.0 is supported by design, not validated yet.
 
@@ -144,13 +142,13 @@ GlobalPluginPaths: [<prefix>/lib/mc_plugins]   # only if <prefix> is not the mc_
 ```bash
 # NVIDIA GPU driver + docker + NVIDIA Container Toolkit, then:
 docker login nvcr.io        # if required: user $oauthtoken, password = your NGC API key
-docker pull nvcr.io/nvidia/isaac-sim:5.1.0
+docker pull nvcr.io/nvidia/isaac-sim:6.1.0
 ```
 
 **Use** — either start Isaac yourself once:
 
 ```bash
-mc_isaac_server --docker --detach                                  # official 5.1.0; Isaac window on your desktop
+mc_isaac_server --docker --detach                                  # official 6.1.0; Isaac window on your desktop
 mc_isaac -f my_controller.yaml                                       # as many runs as you want
 mc_isaac_server --stop                                               # when you are done
 ```
@@ -161,7 +159,7 @@ or let `mc_isaac` start it when nothing answers (`~/.config/mc_rtc/plugins/Isaac
 server:
   launch:
     mode: docker
-    docker: {image: nvcr.io/nvidia/isaac-sim:5.1.0}
+    docker: {image: nvcr.io/nvidia/isaac-sim:6.1.0}
     keep_alive: true       # leave Isaac running after the controller exits (next start is instant)
 ```
 
@@ -209,7 +207,7 @@ side reaches Isaac at `127.0.0.1:5050`. No shared volume is needed.
 **Install**
 
 - mc_rtc container: install mc_isaac in it (common steps above).
-- Host: `docker pull nvcr.io/nvidia/isaac-sim:5.1.0` and get the mc_isaac sources (no build needed, the launcher is
+- Host: `docker pull nvcr.io/nvidia/isaac-sim:6.1.0` and get the mc_isaac sources (no build needed, the launcher is
   a standalone Python script).
 
 **Use**
@@ -252,7 +250,7 @@ or `server.launch.mode: local` (`local: {python: auto}`) to let `mc_isaac` start
 **Install**
 
 ```bash
-apptainer pull isaac-sim.sif docker://nvcr.io/nvidia/isaac-sim:5.1.0
+apptainer pull isaac-sim.sif docker://nvcr.io/nvidia/isaac-sim:6.1.0
 ```
 
 **Use**
@@ -271,7 +269,7 @@ Run the server on the GPU machine, the controller elsewhere; assets are uploaded
 
 ```bash
 # GPU machine (exposes the API: anyone reaching this address can control the simulation!)
-mc_isaac_server --docker nvcr.io/nvidia/isaac-sim:5.1.0 --host 0.0.0.0 --headless --stream mjpeg --detach
+mc_isaac_server --docker nvcr.io/nvidia/isaac-sim:6.1.0 --host 0.0.0.0 --headless --stream mjpeg --detach
 # controller machine
 mc_isaac -f my_controller.yaml --server <gpu-machine>:5050
 # view: http://<gpu-machine>:5050/
@@ -537,7 +535,7 @@ mc_isaac_server --status | --stop | --clear                         # query / st
 
 | Option | Meaning |
 |---|---|
-| `--docker [IMAGE]` | Docker image; defaults to the recommended, tested `nvcr.io/nvidia/isaac-sim:5.1.0` |
+| `--docker [IMAGE]` | Docker image; defaults to the recommended, tested `nvcr.io/nvidia/isaac-sim:6.1.0` |
 | `--headless`, `--stream none\|mjpeg\|webrtc`, `--stream-fps`, `--stream-size` | display mode |
 | `--host`, `--http-port`, `--bridge-port` | addresses (default `127.0.0.1`, `5050`, `5055`) |
 | `--name`, `--recreate` | docker container name; recreate after changing options |
@@ -548,7 +546,7 @@ mc_isaac_server --status | --stop | --clear                         # query / st
 | `--timeout` | seconds to wait for readiness with `--detach` |
 | `--dry-run` | print the commands only |
 
-Docker X11 cookies are refreshed at each start. For the official 5.1.0 profile, the staged cookie is protected by
+Docker X11 cookies are refreshed at each start. For the official 6.1.0 profile, the staged cookie is protected by
 a private host directory and bind-mounted read-only for UID 1234. Custom images use a cookie copied into the
 container, readable by the image's user. `--host-vulkan` replaces the image's Vulkan configuration with the
 host's and is only needed by some custom images/drivers. Changing it requires `--recreate`; custom images
@@ -572,7 +570,7 @@ URDF → single-file USD for mc_isaac, with the Isaac Sim URDF importer and the 
 `<prefix>/share/mc_isaac/scripts`, run with the Isaac Python (e.g. in the Isaac image):
 
 ```bash
-docker run --rm --gpus all -e ACCEPT_EULA=Y --entrypoint /isaac-sim/python.sh -v $PWD:/w nvcr.io/nvidia/isaac-sim:5.1.0 \
+docker run --rm --gpus all -e ACCEPT_EULA=Y --entrypoint /isaac-sim/python.sh -v $PWD:/w nvcr.io/nvidia/isaac-sim:6.1.0 \
   /w/mc_isaac_urdf_to_usd.py /w/robot.urdf /w/out/robot.usd        # package:// URIs replaced by absolute paths
 ```
 
