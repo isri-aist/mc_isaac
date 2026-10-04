@@ -52,7 +52,7 @@ mc_rtc installed (see [installation cases](#-choose-your-installation) for the o
 
 #### 1️⃣ build and install mc_isaac  
 ```bash
-git clone https://github.com/isri-aist/mc_isaac.git && cd mc_isaac          
+git clone --branch isaacsim6.1 https://github.com/isri-aist/mc_isaac.git && cd mc_isaac          
 mkdir build/ && cd build
 #Install next to mc_rtc
 cmake .. -DCMAKE_BUILD_TYPE=RelWithDebInfo
