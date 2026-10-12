@@ -406,6 +406,7 @@ inline `robots:` → `~/.config/mc_rtc/mc_isaac/` → `description_paths` → `<
 | `mass` | mass of a rigid object [kg] | from the USD |
 | `self_collisions` | override the articulation self-collision setting | from the USD |
 | `solver_iterations` | `{position: N, velocity: M}` PhysX articulation solver iterations | from the USD |
+| `disable_gravity` | disable gravity on every rigid body of the robot | `false` |
 | `drives` | list of `{joints: regex, stiffness, damping, max_effort, max_velocity, armature}` (IsaacLab `ImplicitActuatorCfg` units, rad) | USD gains |
 | `builtin: ground_plane` | the mc_rtc `env/ground` module | — |
 

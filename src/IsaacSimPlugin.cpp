@@ -585,6 +585,7 @@ void IsaacSimPlugin::loadScene(mc_control::MCGlobalController & gc)
     }
     if(desc.has("drives")) { entry.add("drives", desc("drives")); }
     if(desc.has("self_collisions")) { entry.add("self_collisions", static_cast<bool>(desc("self_collisions"))); }
+    if(desc.has("disable_gravity")) { entry.add("disable_gravity", static_cast<bool>(desc("disable_gravity"))); }
     if(desc.has("solver_iterations")) { entry.add("solver_iterations", desc("solver_iterations")); }
     entry.add("torque_control", torqueControl_);
     // every mc_rtc body sensor but FloatingBase is simulated as an IMU (gyro + accelerometer) on its parent link

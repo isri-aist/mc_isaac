@@ -664,6 +664,13 @@ class RobotHandle:
         if spec.get("self_collisions") is not None:
             PhysxSchema.PhysxArticulationAPI.Apply(art_root).CreateEnabledSelfCollisionsAttr(bool(spec["self_collisions"]))
             log(f"  {self.name}: self-collisions {'enabled' if spec['self_collisions'] else 'disabled'}")
+        if spec.get("disable_gravity"):
+            n_bodies = 0
+            for p in Usd.PrimRange(robot):
+                if p.HasAPI(UsdPhysics.RigidBodyAPI):
+                    PhysxSchema.PhysxRigidBodyAPI.Apply(p).CreateDisableGravityAttr(True)
+                    n_bodies += 1
+            log(f"  {self.name}: gravity disabled on {n_bodies} bodies")
         iterations = spec.get("solver_iterations") or {}
         if iterations:
             articulation = PhysxSchema.PhysxArticulationAPI.Apply(art_root)
