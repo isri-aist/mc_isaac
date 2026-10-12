@@ -46,6 +46,12 @@ simulation:
   print_timings_period: 5.0
 # draw the mc_rtc 3D GUI elements (points, trajectories, arrows, frames...) in the Isaac viewport
 markers: true
+# minimum wall time [s] between two marker updates sent to Isaac (0: with every bridge request)
+markers_period: 0.05
+# mc_rtc GUI publication timestep [s] while mc_isaac runs (overrides GUIServer.Timestep of mc_rtc.yaml for every GUI
+# client, e.g. mc-rtc-magnum too). Markers and the full GUI mirror only see published GUI states, so this bounds
+# their refresh rate in simulated time. auto: keep the mc_rtc.yaml value | 0: every control step
+gui_server_timestep: auto
 # 2D GUI in the Isaac window: none | minimal (mc_isaac panel) | full (the whole mc_rtc GUI, like mc-rtc-magnum,
 # one tab per mc_rtc category docked next to Property, plots in an "mc_rtc plots" window)
 gui: minimal

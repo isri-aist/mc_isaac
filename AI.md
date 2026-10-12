@@ -51,7 +51,7 @@ Versions: server `0.12.0`, plugin requires `>= 0.12.0` (`MIN_SERVER_VERSION`). B
   quat}], force_sensors[{name, link, pos, quat}]}]`.
 - Bridge frame `!II` + JSON header + float64 LE payload. Messages `hello`, `step{n_substeps, interpolate, render}`,
   `state`, `reset`, `ping`. Every request carries `running` and `ticker{step_by_step, sync, target_ratio, dt,
-  markers}`, `gui_mode` (none/minimal/full), at most every 50 ms `markers{lines, points, handles}` and, with gui:
+  markers}`, `gui_mode` (none/minimal/full), at most every `markers_period` (0.05 s) `markers{lines, points, handles}` and, with gui:
   full, at most every 100 ms and only when changed `gui{tree, data, schemas, plots, plots_active, full}`. Replies:
   `timeline_playing`, `isaac_event` (play/pause pressed in Isaac), `reloaded` (Isaac Stop rebuilt the scene),
   `commands` (Isaac panel), `gui_requests` (handles moved with the gizmo), `gui_widget_requests` ([{key, data?}],
@@ -79,7 +79,10 @@ Versions: server `0.12.0`, plugin requires `>= 0.12.0` (`MIN_SERVER_VERSION`). B
 - **Joint mapping** by name: Isaac order (breadth-first) ≠ mc_rtc `refJointOrder`. Isaac joints unknown to mc_rtc
   hold their initial position; mc_rtc joints not in Isaac keep the ticker values.
 - **Sensors**: `FloatingBase` only when attached to the root body (PhysX root velocity is at the COM → converted to
-  the origin). Other body sensors = IMU (acceleration by finite differences over a control step). Force sensors =
+  the origin). Bridge quaternions are world orientations; mc_rtc body sensor orientations are the **inverse** (sva
+  rotation: mc_rtc Ticker `Quaterniond{posW().rotation()}`, `BodySensorObserver` `PTransformd(orientation, pos)`,
+  mc_mujoco `root_ori.inverse()`), so the plugin sets the conjugate (FloatingBase and IMUs). Other body sensors =
+  IMU (acceleration by finite differences over a control step). Force sensors =
   negated `get_link_incoming_joint_force()` of the sensor parent link (wrench from the parent, link frame, at the
   joint = link origin for URDF imports), moved to the sensor pose: reads contact wrench + weight of the bodies
   after the sensor (feet Fz > 0 standing). Needs the sensor link to be a separate USD body (no fixed-joint merge).
@@ -93,7 +96,11 @@ Versions: server `0.12.0`, plugin requires `>= 0.12.0` (`MIN_SERVER_VERSION`). B
   commands are queued and sent with the next bridge reply, scene actions run from the main loop.
 - **Markers**: `Markers` = in-process `mc_control::ControllerClient` connected to `gc.server()` (reads the published
   GUI buffer, no side effect; `update()` parses each publication once, by hash, so accumulated trajectories and plot
-  points are not duplicated). Lines/points → `isaacsim.util.debug_draw`; editable Point3D/Transform/Rotation →
+  points are not duplicated). The server publishes before the plugins' `after()` and only every `GUIServer.Timestep`
+  (`data()` is empty in between), so `after()` calls `update()` at every call and `addMarkers()` only throttles the
+  sending (`markers_period`); throttling the parse would alias with the publication period and drop most of them.
+  `gui_server_timestep` overrides the publication rate (`ControllerServer::update_rate`, all GUI clients) while
+  mc_isaac runs. Lines/points → `isaacsim.util.debug_draw`; editable Point3D/Transform/Rotation →
   sphere prims under `/World/mc_isaac_markers` that the user moves with the gizmo; the server returns their poses
   (0.5 s hold against mc_rtc overwrites) → GUI requests.
 - **2D GUI modes** (`gui:` / `--gui`, sent as `gui_mode`): server shows the mc_isaac panel without client and with
@@ -134,7 +141,7 @@ Versions: server `0.12.0`, plugin requires `>= 0.12.0` (`MIN_SERVER_VERSION`). B
 - One-off `SimulationApp` scripts: set `PYTHONUNBUFFERED=1` (close() exits without flushing stdout). `pxr` outside a
   SimulationApp: `PYTHONPATH=<isaac>/extscache/omni.usd.libs-*` and `LD_LIBRARY_PATH=<that>/bin`.
 - Quaternions: tensor API `xyzw`, USD `Gf.Quat` (real, imaginary), spec/mc_rtc `wxyz`, `sva` rotations are the
-  transpose of Eigen's.
+  transpose of Eigen's; mc_rtc `BodySensor::orientation()` is the sva one (inverse of the world orientation).
 - `mc_rtc::Configuration::operator()(key, T&)` returns void and assigns in place when the key exists.
 - `/persistent/physics/visualizationDisplayColliders` (2/0) shows collision shapes.
 - Docker: options are stored in a container label; changed options require `--recreate`.

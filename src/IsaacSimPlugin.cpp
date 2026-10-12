@@ -15,6 +15,7 @@
 #include "Net.h"
 #include "Sha256.h"
 
+#include <mc_control/ControllerServer.h>
 #include <mc_control/GlobalPluginMacros.h>
 #include <mc_rtc/gui.h>
 #include <mc_rtc/logging.h>
@@ -259,6 +260,14 @@ void IsaacSimPlugin::init(mc_control::MCGlobalController & gc, const mc_rtc::Con
   loadScene(gc);
   fetchLogs();
   connectBridge(gc);
+  if(guiServerTimestep_ >= 0.0 && gc.configuration().enable_gui_server)
+  {
+    // the server publishes every ceil(timestep / dt) control steps; markers and the GUI mirror only see publications
+    gc.server().update_rate(gc.timestep(), guiServerTimestep_);
+    const double published = std::max(1.0, std::ceil(guiServerTimestep_ / gc.timestep() - 1e-9)) * gc.timestep();
+    mc_rtc::log::info("[mc_isaac] mc_rtc GUI published every {} ms (gui_server_timestep, GUIServer.Timestep was {} ms)",
+                      published * 1e3, gc.configuration().gui_server_configuration.timestep * 1e3);
+  }
   connectMarkers(gc);
   addGui(gc);
   mc_rtc::log::success("[mc_isaac] Isaac Sim ready: {} robot(s), {} x {} ms physics steps per {} ms control step",
@@ -332,6 +341,18 @@ void IsaacSimPlugin::loadConfig(const mc_rtc::Configuration & config)
     simulation("print_timings_period", printPeriod_);
   }
   config("markers", markersEnabled_);
+  config("markers_period", markersPeriod_);
+  if(config.has("gui_server_timestep"))
+  {
+    const auto ts = config("gui_server_timestep");
+    const bool keep = ts.isString() && static_cast<std::string>(ts) == "auto";
+    guiServerTimestep_ = keep ? -1.0 : static_cast<double>(ts);
+    if(!keep && guiServerTimestep_ < 0.0)
+    {
+      mc_rtc::log::error_and_throw("[mc_isaac] gui_server_timestep must be auto or >= 0 (0: every control step)");
+    }
+  }
+  if(markersPeriod_ < 0.0) { mc_rtc::log::error_and_throw("[mc_isaac] markers_period must be >= 0"); }
   config("gui", guiMode_);
   applyCommandLine();
   if(guiMode_ != "none" && guiMode_ != "minimal" && guiMode_ != "full")
@@ -808,9 +829,8 @@ void IsaacSimPlugin::addMarkers(mc_rtc::Configuration & header)
 {
   header.add("gui_mode", guiMode_);
   const auto now = std::chrono::steady_clock::now();
-  if(!markers_ || now - lastMarkers_ < std::chrono::milliseconds(50)) { return; }
+  if(!markers_ || now - lastMarkers_ < std::chrono::duration<double>(markersPeriod_)) { return; }
   lastMarkers_ = now;
-  if(markersEnabled_ || guiMirror_) { markers_->update(); }
   if(markersEnabled_) { header.add("markers", markers_->toConfig()); }
   else
   {
@@ -1090,12 +1110,14 @@ void IsaacSimPlugin::before(mc_control::MCGlobalController & gc)
       gc.setEncoderVelocities(isaac.mcName, alpha);
       gc.setJointTorques(isaac.mcName, tau);
     }
-    // Isaac gives the root body state: only usable when the FloatingBase sensor is attached to the root body
+    // Isaac gives the root body state: only usable when the FloatingBase sensor is attached to the root body.
+    // Isaac quaternions are world orientations, mc_rtc body sensors hold the sva rotation (its inverse), see
+    // mc_rtc's Ticker (Quaterniond{posW().rotation()}) and mc_mujoco (root_ori.inverse()).
     if(!isaac.fixedBase && robot.hasBodySensor("FloatingBase")
        && robot.bodySensor("FloatingBase").parentBody() == robot.mb().body(0).name())
     {
       gc.setSensorPositions(isaac.mcName, {{"FloatingBase", isaac.pos}});
-      gc.setSensorOrientations(isaac.mcName, {{"FloatingBase", isaac.ori}});
+      gc.setSensorOrientations(isaac.mcName, {{"FloatingBase", isaac.ori.conjugate()}});
       gc.setSensorLinearVelocities(isaac.mcName, {{"FloatingBase", isaac.linVel}});
       gc.setSensorAngularVelocities(isaac.mcName, {{"FloatingBase", isaac.angVel}});
     }
@@ -1103,7 +1125,7 @@ void IsaacSimPlugin::before(mc_control::MCGlobalController & gc)
     {
       const double * v = isaac.imuValues.data() + i * IMU_STATE_SIZE;
       const auto & name = isaac.imus[i];
-      gc.setSensorOrientations(isaac.mcName, {{name, Eigen::Quaterniond(v[0], v[1], v[2], v[3])}});
+      gc.setSensorOrientations(isaac.mcName, {{name, Eigen::Quaterniond(v[0], v[1], v[2], v[3]).conjugate()}});
       gc.setSensorAngularVelocities(isaac.mcName, {{name, Eigen::Vector3d(v[4], v[5], v[6])}});
       gc.setSensorLinearAccelerations(isaac.mcName, {{name, Eigen::Vector3d(v[7], v[8], v[9])}});
     }
@@ -1145,6 +1167,9 @@ void IsaacSimPlugin::after(mc_control::MCGlobalController & gc)
     reloadScene(gc);
     return;
   }
+  // the GUI server publishes before the plugins' after() and only every GUIServer.Timestep: parse every publication
+  // here, the bridge requests only send the result (every markers_period)
+  if(markers_ && (markersEnabled_ || guiMirror_)) { markers_->update(); }
   if(!gc.running)
   {
     // ticker paused: no step, but keep following the Isaac window (Play button, Stop) at ~20 Hz

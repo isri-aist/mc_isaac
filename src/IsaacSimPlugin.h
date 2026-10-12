@@ -152,10 +152,13 @@ private:
     size_t renders = 0;
   };
   bool printTimings_ = false;
-  /** mc_rtc 3D GUI elements drawn in Isaac (sent at most every 50 ms) */
+  /** mc_rtc 3D GUI elements drawn in Isaac (sent at most every markersPeriod_ seconds of wall time) */
   std::unique_ptr<Markers> markers_;
   bool markersEnabled_ = true;
+  double markersPeriod_ = 0.05;
   std::chrono::steady_clock::time_point lastMarkers_;
+  /** mc_rtc GUI publication timestep while mc_isaac runs (markers only see published states), < 0: mc_rtc.yaml */
+  double guiServerTimestep_ = -1.0;
   /** 2D GUI in the Isaac window: none | minimal (mc_isaac panel) | full (mirror of the whole mc_rtc GUI) */
   std::string guiMode_ = "minimal";
   /** markers_ when gui: full (the mirror also handles the 3D elements), else nullptr */

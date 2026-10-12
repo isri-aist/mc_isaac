@@ -376,6 +376,13 @@ Points, trajectories, polygons, arrows, forces and frames of the mc_rtc GUI are 
 points / transforms / rotations get a small sphere: select it, move it with Isaac's transform tools (`W` / `E`), and
 the controller receives the new target.
 
+⏱️ Markers come from the mc_rtc GUI publications, i.e. every `GUIServer.Timestep` of `mc_rtc.yaml` (mc_rtc default
+0.05 s of simulated time), and are sent to Isaac at most every `markers_period` (0.05 s of wall time). Force arrows
+or estimated frames can therefore trail the simulated bodies. For smoother markers lower both, e.g.
+`gui_server_timestep: 0` (every control step) and `markers_period: 0.02`. `gui_server_timestep` applies to all GUI
+clients (mc-rtc-magnum too) and costs one GUI serialization per publication. It only changes the display, not the
+controller's sensor feedback.
+
 ---
 
 ## 🦾 Robots and objects
@@ -469,6 +476,8 @@ simulation:
   print_timings: false
   print_timings_period: 5.0
 markers: true
+markers_period: 0.05
+gui_server_timestep: auto
 gui: minimal
 camera: {position: [2.0, -2.0, 1.5], target: [0.0, 0.0, 0.8], focal_length: 18.0}
 description_paths: []
@@ -490,6 +499,8 @@ robots: {}
 | `simulation.torque_control` | mc_rtc joint torques applied as efforts, drive gains set to 0 |
 | `simulation.print_timings`, `print_timings_period` | print a timing breakdown every N seconds |
 | `markers` | draw the mc_rtc 3D GUI elements in the viewport |
+| `markers_period` | minimum wall time [s] between two marker updates sent to Isaac (default `0.05`, `0` = every step) |
+| `gui_server_timestep` | mc_rtc GUI publication timestep [s] while mc_isaac runs, overrides `GUIServer.Timestep` of `mc_rtc.yaml` (all GUI clients). `auto` (default) = keep `mc_rtc.yaml`, `0` = every control step ([Markers](#markers-in-the-viewport)) |
 | `gui` | 2D GUI in the Isaac window: `none`, `minimal`, `full` ([GUI](#️-gui-controlling-the-simulation)) |
 | `camera` | scene camera (world frame): `position`, `target`, `focal_length`, `viewport` |
 | `description_paths` | extra folders with `<key>.yaml` descriptions |
